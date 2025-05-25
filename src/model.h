@@ -42,11 +42,12 @@ class Model {
     std::shared_ptr<Matrix> wo_;
     std::shared_ptr<Matrix> wi2_;
     std::shared_ptr<Matrix> wo2_;
-
     std::shared_ptr<Matrix> invar_;
     std::shared_ptr<Matrix> outvar_;
     std::shared_ptr<Matrix> invar2_;
     std::shared_ptr<Matrix> outvar2_;
+
+    std::int32_t num_words;
 
     std::shared_ptr<QMatrix> qwi_;
     std::shared_ptr<QMatrix> qwo_;
@@ -91,7 +92,9 @@ class Model {
              std::shared_ptr<Matrix>,
              std::shared_ptr<Matrix>,
              std::shared_ptr<Matrix>,
+             
              std::shared_ptr<Args>,
+             int32_t,
              int32_t);
     ~Model();
 

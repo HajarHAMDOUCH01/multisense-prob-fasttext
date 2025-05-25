@@ -51,4 +51,5 @@ fasttext: $(OBJS) src/fasttext.cc
 	$(CXX) $(CXXFLAGS) $(OBJS) src/main.cc -o multift
 
 clean:
-	rm -rf *.o multift
+	del /S /Q *.o
+	del /S /Q multift.exe

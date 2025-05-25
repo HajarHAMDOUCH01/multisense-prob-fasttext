@@ -14,7 +14,7 @@
 #include <istream>
 #include <ostream>
 #include <string>
-
+#include "matrix.h"
 namespace fasttext {
 
 enum class model_name : int {cbow=1, sg, sup};
@@ -26,6 +26,7 @@ class Args {
     std::string input;
     std::string test;
     std::string output;
+    real diversity_weight;
     double lr;
     int lrUpdateRate;
     int dim;

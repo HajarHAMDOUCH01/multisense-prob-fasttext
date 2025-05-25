@@ -18,9 +18,10 @@
 namespace fasttext {
 
 Args::Args() {
+  diversity_weight = 0.0;
   lr = 0.05;
   dim = 100;
-  ws = 5;
+  ws = 100;
   epoch = 5;
   minCount = 5;
   minCountLabel = 0;
@@ -64,6 +65,7 @@ Args::Args() {
 }
 
 void Args::parseArgs(int argc, char** argv) {
+
   std::string command(argv[1]);
   if (command == "supervised") {
     model = model_name::sup;
@@ -75,6 +77,7 @@ void Args::parseArgs(int argc, char** argv) {
   } else if (command == "cbow") {
     model = model_name::cbow;
   }
+
   int ai = 2;
   while (ai < argc) {
     if (argv[ai][0] != '-') {
@@ -82,7 +85,8 @@ void Args::parseArgs(int argc, char** argv) {
       printHelp();
       exit(EXIT_FAILURE);
     }
-    if (strcmp(argv[ai], "-h") == 0) {
+    // All known arguments should be chained using 'else if'
+    else if (strcmp(argv[ai], "-h") == 0) {
       std::cerr << "Here is the help! Usage:" << std::endl;
       printHelp();
       exit(EXIT_FAILURE);
@@ -141,21 +145,21 @@ void Args::parseArgs(int argc, char** argv) {
     } else if (strcmp(argv[ai], "-saveOutput") == 0) {
       saveOutput = atoi(argv[ai + 1]);
     } else if (strcmp(argv[ai], "-qnorm") == 0) {
-      qnorm = true; ai--;
+      qnorm = true; ai--; // These decrement 'ai' because they don't have a value argument
     } else if (strcmp(argv[ai], "-retrain") == 0) {
       retrain = true; ai--;
     } else if (strcmp(argv[ai], "-qout") == 0) {
       qout = true; ai--;
     } else if (strcmp(argv[ai], "-cutoff") == 0) {
-    cutoff = atoi(argv[ai + 1]);
+      cutoff = atoi(argv[ai + 1]);
     } else if (strcmp(argv[ai], "-dsub") == 0) {
       dsub = atoi(argv[ai + 1]);
     } else if (strcmp(argv[ai], "-gs_lambda") == 0) {
       gs_lambda = atof(argv[ai + 1]);
-      std::cerr << "Group Sparsity Lambda = " << gs_lambda <<  std::endl;
+      std::cerr << "Group Sparsity Lambda = " << gs_lambda << std::endl;
     } else if (strcmp(argv[ai], "-num_gs_samples") == 0) {
       num_gs_samples = atoi(argv[ai + 1]);
-      std::cerr << "Number of Group Sparsity Samples = " << num_gs_samples <<  std::endl;
+      std::cerr << "Number of Group Sparsity Samples = " << num_gs_samples << std::endl;
     } else if (strcmp(argv[ai], "-include_dictemb") == 0) {
       include_dictemb = atoi(argv[ai + 1]);
       std::cerr << "Setting: including dict embedding in subword vector averaging =" << include_dictemb << std::endl;
@@ -189,13 +193,21 @@ void Args::parseArgs(int argc, char** argv) {
     } else if (strcmp(argv[ai], "-var") == 0) {
       var = atoi(argv[ai + 1]); // 0 for false and else for true
       std::cerr << "var" << var << std::endl;
-    } else {
+    }
+    // THIS IS THE CORRECT PLACE FOR THE NEW ARGUMENT
+    else if (strcmp(argv[ai], "-diversity_weight") == 0) {
+      diversity_weight = atof(argv[ai + 1]);
+      std::cerr << "Diversity Weight: " << diversity_weight << std::endl;
+    }
+    // The final 'else' should catch all unrecognized arguments
+    else {
       std::cerr << "Unknown argument: " << argv[ai] << std::endl;
       printHelp();
       exit(EXIT_FAILURE);
     }
-    ai += 2;
+    ai += 2; // Increment by 2 for argument flag and its value
   }
+
   if (input.empty() || output.empty()) {
     std::cerr << "Empty input or output path." << std::endl;
     printHelp();

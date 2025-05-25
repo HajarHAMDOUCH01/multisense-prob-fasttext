@@ -10,6 +10,8 @@
 
 #include "model.h"
 
+#include <vector>   
+#include <numeric>   
 #include <iostream>
 #include <assert.h>
 #include <algorithm>
@@ -28,7 +30,8 @@ Model::Model(std::shared_ptr<Matrix> wi,
              std::shared_ptr<Matrix> outvar,
              std::shared_ptr<Matrix> outvar2,
              std::shared_ptr<Args> args,
-             int32_t seed)
+             int32_t seed,
+             int32_t num_words)
   : hidden_(args->dim), hidden2_(args->dim), output_(wo->m_),
   grad_(args->dim), grad2_(args->dim), temp_(args->dim), gradvar_(args->dim),gradvar2_(args->dim), rng(seed), quant_(false)
 {
@@ -246,65 +249,66 @@ std::vector<float> Model::energy_expdot(int32_t target){
 }
 
 // partial energy expdot
-real Model::partial_energy_vecvar(Vector& hidden, Vector& grad, std::shared_ptr<Matrix> wo, int32_t wordidx, int32_t target, std::shared_ptr<Matrix> varin, std::shared_ptr<Matrix> varout){
-  temp_.zero();
-  for (int64_t j = 0; j < varin->n_; j++){
-    temp_.data_[j] += exp(varin->at(wordidx, j)) + exp(varout->at(target, j));
-  }
-  hidden_.addRow(*wo, target, -1.);
-  real sim = 0.0;
-  for (int64_t i = 0; i < temp_.m_; i++) {
-    sim += pow(hidden_.data_[i], 2.0)/(1e-8 + temp_.data_[i]);
-    sim += log(temp_.data_[i]); // This is the log det part
-  }
-  sim *= -0.5;
-  hidden.addRow(*wo, target, 1.); // mu
-  return sim;
-}
+real Model::partial_energy_vecvar(Vector& hidden_vec, Vector& grad_vec_unused, std::shared_ptr<Matrix> wo, int32_t wordidx, int32_t target, std::shared_ptr<Matrix> varin, std::shared_ptr<Matrix> varout){
+    temp_.zero(); 
+    for (int64_t j = 0; j < varin->n_; j++){
+        temp_.data_[j] = exp(varin->at(wordidx, j)) + exp(varout->at(target, j));
+    }
+    hidden_vec.addRow(*wo, target, -1.0); 
 
+    real sim = 0.0;
+    for (int64_t i = 0; i < temp_.m_; i++) {
+        sim += pow(hidden_vec.data_[i], 2.0) / (1e-8 + temp_.data_[i]);
+        sim += log(1e-8 + temp_.data_[i]); 
+    }
+    sim *= -0.5; 
+
+    hidden_vec.addRow(*wo, target, 1.0); 
+
+    return sim;
+}
 // This should be the same as the energy expdot actually
 std::vector<float> Model::energy_vecvar(int32_t wordidx, int32_t target){
-  real sim = 0.0;
-  real sim00 = 0.0;
-  real sim01 = 0.0;
-  real sim10 = 0.0;
-  real sim11 = 0.0;
+    // Calculate individual energy contributions (sim_ij where i=prototype, j=output matrix)
+    // Prototype 1 (hidden_) with output matrices wo_ and wo2_
+    real sim00 = partial_energy_vecvar(hidden_, grad_, wo_, wordidx, target, invar_, outvar_);
+    real sim01 = partial_energy_vecvar(hidden_, grad_, wo2_, wordidx, target, invar_, outvar2_);
 
-  for(int i=0; i<2; i++){
-    for(int j=0; j<2; j++){
-      if (i==0 and j ==0){
-        sim00 = partial_energy_vecvar(hidden_, grad_, wo_, wordidx, target, invar_, outvar_);
-      } else if (i==0 and j==1){
-        sim01 = partial_energy_vecvar(hidden_, grad_, wo2_, wordidx, target, invar_, outvar2_);
-      } else if (i==1 and j==0){
-        sim10 = partial_energy_vecvar(hidden2_, grad2_, wo_, wordidx, target, invar2_, outvar_);
-      } else if (i==1 and j==1){
-        sim11 = partial_energy_vecvar(hidden2_, grad2_, wo2_, wordidx, target, invar2_, outvar2_);
-      }
-    }
-  }
+    // Prototype 2 (hidden2_) with output matrices wo_ and wo2_
+    real sim10 = partial_energy_vecvar(hidden2_, grad2_, wo_, wordidx, target, invar2_, outvar_);
+    real sim11 = partial_energy_vecvar(hidden2_, grad2_, wo2_, wordidx, target, invar2_, outvar2_);
 
-  std::vector<float> pes;
-  pes.push_back(sim00);
-  pes.push_back(sim01);
-  pes.push_back(sim10);
-  pes.push_back(sim11);
-  auto it = max_element(std::begin(pes), std::end(pes));
-  float max_pe = *it;
-  float sum_exp_diff = 0.0;
-  for (auto it = pes.begin(); it != pes.end(); ++it){
-    sum_exp_diff += std::exp( (*it) - max_pe);
-  }
-  // We return [max_partial_energy, sum of e(xi_ij - max_pe), the energy]
-  std::vector<float> result;
-  result.push_back(max_pe);
-  result.push_back(sum_exp_diff);
-  result.push_back(max_pe + std::log(sum_exp_diff)); // This is the loss
-  result.push_back(std::exp(sim00 - max_pe));
-  result.push_back(std::exp(sim01 - max_pe));
-  result.push_back(std::exp(sim10 - max_pe));
-  result.push_back(std::exp(sim11 - max_pe));
-  return result;
+    // Compute individual prototype energies for the positive sample
+    // This assumes each prototype's relevance is a sum of its interactions with different output matrices
+    real energy_proto1_pos = sim00 + sim01;
+    real energy_proto2_pos = sim10 + sim11;
+
+    // Compute the combined energy using Log-Sum-Exp for numerical stability.
+    // This value (eplus_result.at(2)) will be used directly in the loss calculation.
+    real sum_exp_individual_proto_energies = std::exp(energy_proto1_pos) + std::exp(energy_proto2_pos);
+    real combined_energy_pos = std::log(1e-8 + sum_exp_individual_proto_energies);
+
+    // Calculate xi values (proportional contributions from each specific interaction).
+    // These act as attention weights or scaling factors for gradients.
+    // They are computed based on the individual 'sim' values before they are summed into proto energies.
+    real norm_factor_for_xi = (1e-8 + std::exp(sim00) + std::exp(sim01) + std::exp(sim10) + std::exp(sim11));
+
+    real xi_plus_0_0 = std::exp(sim00) / norm_factor_for_xi; // Proto1 (hidden_) interacting with WO1 (wo_)
+    real xi_plus_0_1 = std::exp(sim01) / norm_factor_for_xi; // Proto1 (hidden_) interacting with WO2 (wo2_)
+    real xi_plus_1_0 = std::exp(sim10) / norm_factor_for_xi; // Proto2 (hidden2_) interacting with WO1 (wo_)
+    real xi_plus_1_1 = std::exp(sim11) / norm_factor_for_xi; // Proto2 (hidden2_) interacting with WO2 (wo2_)
+
+    // Return the results in the exact vector format expected by negativeSamplingMultiVecVar
+    std::vector<float> result;
+    result.push_back(energy_proto1_pos);    // eplus_result.at(0): Individual energy for hidden_
+    result.push_back(energy_proto2_pos);    // eplus_result.at(1): Individual energy for hidden2_
+    result.push_back(combined_energy_pos);  // eplus_result.at(2): Log-Sum-Exp of individual proto energies
+    result.push_back(xi_plus_0_0);          // eplus_result.at(3)
+    result.push_back(xi_plus_0_1);          // eplus_result.at(4)
+    result.push_back(xi_plus_1_0);          // eplus_result.at(5)
+    result.push_back(xi_plus_1_1);          // eplus_result.at(6)
+
+    return result;
 }
 
 
@@ -614,270 +618,280 @@ real Model::negativeSamplingMultiVecExpdot(int32_t target, real lr){
   }
   return std::max((real) 0.0, loss);
 }
-
 // Feb6 TODO
-real Model::negativeSamplingMultiVecVar(int32_t wordidx, int32_t target, real lr){
-  grad_.zero();
-  grad2_.zero();
-  gradvar_.zero();
-  gradvar2_.zero();
-  // 1. we compute sim1 and sim2 and see if we need to update
-  std::vector<float> eplus_result = energy_vecvar(wordidx, target);
-  int32_t negTarget = getNegative(target);
-  std::vector<float> eminus_result = energy_vecvar(wordidx, negTarget);
-  real loss = args_->margin - eplus_result.at(2) + eminus_result.at(2);
-  if (loss > 0.0){
-    // 2. The goal is to update grad_ and grad2_
-    real inv_sum_eplus  = lr*(1./eplus_result.at(1));
-    real inv_sum_eminus = lr*(1./eminus_result.at(1));
+real Model::negativeSamplingMultiVecVar(int32_t wordidx, int32_t target, real lr) {
+    grad_.zero();
+    grad2_.zero();
+    gradvar_.zero();
+    gradvar2_.zero();
 
-    std::vector< std::vector<real> > xi_plus;
-    std::vector<real> vp1;
-    std::vector<real> vp2;
-    vp1.push_back(eplus_result.at(3));
-    vp1.push_back(eplus_result.at(4));
-    vp2.push_back(eplus_result.at(5));
-    vp2.push_back(eplus_result.at(6));
-    xi_plus.push_back(vp1);
-    xi_plus.push_back(vp2);
-    
-    std::vector< std::vector<real> > xi_minus;
-    std::vector<real> vm1;
-    std::vector<real> vm2;
-    vm1.push_back(eminus_result.at(3));
-    vm1.push_back(eminus_result.at(4));
-    vm2.push_back(eminus_result.at(5));
-    vm2.push_back(eminus_result.at(6));
-    xi_minus.push_back(vm1);
-    xi_minus.push_back(vm2);
+    real dot_product = 0.0;
+    real norm_hidden = 0.0;
+    real norm_hidden2 = 0.0;
+    real current_cosine_sim = 0.0;
 
-    // with gradients, update gradvar_ and gradvar2_
-    if (args_->var){
-    // updating gradvar_
-    // update for context j+
-    // for j=0
-    temp_.zero();
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(0).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo_->at(target, ii), 2.));
-    }
-    // for j=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(0).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo2_->at(target, ii), 2.));
-    }
-    // update for context j-
-    // for j=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eminus*xi_minus.at(0).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo_->at(negTarget, ii), 2.));
-    }
-    // for j=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eminus*xi_minus.at(0).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo2_->at(negTarget, ii), 2.));
-    }
-    // in the end, multiple with d_i to do derivative against the log instead
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      gradvar_.data_[ii] = exp(invar_->at(wordidx, ii))*temp_.data_[ii];
-    }
-    // updating gradvar2_
-    // update for context j+
-    // for j=0
-    temp_.zero();
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(1).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo_->at(target, ii), 2.));
-    }
-    // for j=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(1).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo2_->at(target, ii), 2.));
-    }
-    // update for context j-
-    // for j=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eminus*xi_minus.at(1).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo_->at(negTarget, ii), 2.));
-    }
-    // for j=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eminus*xi_minus.at(1).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo2_->at(negTarget, ii), 2.));
-    }
-    // in the end, multiple with d_i to do derivative against the log instead
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      gradvar2_.data_[ii] = exp(invar2_->at(wordidx, ii))*temp_.data_[ii];
+    std::vector<float> eplus_result = energy_vecvar(wordidx, target);
+    int32_t negTarget = getNegative(target);
+    std::vector<float> eminus_result = energy_vecvar(wordidx, negTarget);
+
+    // Calculate margin-based loss component
+    real margin_loss = args_->margin - eplus_result.at(2) + eminus_result.at(2);
+
+    // Initialize diversity penalty
+    real diversity_penalty = 0.0;
+
+    if (args_->multi) {
+        // DEBUG: Check if multi-sense is active
+        // std::cout << "DEBUG: args_->multi is TRUE." << std::endl;
+
+        for (int64_t i = 0; i < hidden_.m_; i++) {
+            dot_product += hidden_.data_[i] * hidden2_.data_[i];
+            norm_hidden += hidden_.data_[i] * hidden_.data_[i];
+            norm_hidden2 += hidden2_.data_[i] * hidden2_.data_[i];
+        }
+        current_cosine_sim = dot_product / (std::sqrt(norm_hidden + 1e-8) * std::sqrt(norm_hidden2 + 1e-8));
+        diversity_penalty = args_->diversity_weight * (current_cosine_sim * current_cosine_sim);
+
+        // DEBUG: Print cosine similarity and penalty
+        // std::cout << "DEBUG: Cosine Sim: " << current_cosine_sim << ", Diversity Penalty: " << diversity_penalty << std::endl;
     }
 
-    // update outvar_[target]
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eplus*xi_plus.at(0).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo_->at(target, ii), 2.));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eplus*xi_plus.at(1).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo_->at(target, ii), 2.));
-    }
-    temp_.mulExpRow(*outvar_, target); // make it a derivative against log
-    outvar_->addRow(temp_, target, 1.);
+    // Total loss is the sum of both components (if they are positive)
+    real total_loss = std::max((real)0.0, margin_loss) + std::max((real)0.0, diversity_penalty);
 
-    // update outvar2_[target]
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eplus*xi_plus.at(0).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo2_->at(target, ii), 2.));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      temp_.data_[ii] += -0.5*inv_sum_eplus*xi_plus.at(1).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo2_->at(target, ii), 2.));
-    }
-    temp_.mulExpRow(*outvar2_, target);
-    outvar2_->addRow(temp_, target, 1.);
+    // We apply gradients for the margin loss only if it's positive
+    // and gradients for diversity loss only if it's positive.
+    // The real 'lr' needs to be handled carefully here, it's global for both.
+    // Let's modify the gradient calculation based on *which* component is positive.
 
-    // update outvar_[negTarget]
-    // the loss has different sign (compared to target)
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(0).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo_->at(negTarget, ii), 2.));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(1).at(0)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo_->at(negTarget, ii), 2.));
-    }
-    temp_.mulExpRow(*outvar_, negTarget);
-    outvar_->addRow(temp_, negTarget, 1.);
-
-    // update outvar2_[negTarget]
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(0).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden_.data_[ii] - wo2_->at(negTarget, ii), 2.));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      temp_.data_[ii] += 0.5*inv_sum_eplus*xi_plus.at(1).at(1)*(-invsumd + pow(invsumd, 2.)*pow(hidden2_.data_[ii] - wo2_->at(negTarget, ii), 2.));
-    }
-    temp_.mulExpRow(*outvar2_, negTarget);
-    outvar2_->addRow(temp_, negTarget, 1.);
+    real effective_lr_margin = 0.0;
+    if (margin_loss > 0.0) {
+        effective_lr_margin = lr;
     }
 
-    // (1) Update grad_
-    // Do it for context j+
-    // j=0
-    for (int64_t ii = 0; ii < grad_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      grad_.data_[ii] += inv_sum_eplus*xi_plus.at(0).at(0)*(-invsumd*(hidden_.data_[ii] - wo_->at(target, ii)));
-    }
-    // j=1
-    for (int64_t ii = 0; ii < grad_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      grad_.data_[ii] += inv_sum_eplus*xi_plus.at(0).at(1)*(-invsumd*(hidden_.data_[ii] - wo2_->at(target, ii)));
+    real effective_lr_diversity = 0.0;
+    if (diversity_penalty > 0.0 && args_->multi) { // Only apply diversity gradients if the penalty is active and positive
+        effective_lr_diversity = lr;
     }
 
-    // Do it for context j-
-    for (int64_t ii = 0; ii < grad_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      grad_.data_[ii] += -inv_sum_eminus*xi_minus.at(0).at(0)*(-invsumd*(hidden_.data_[ii] - wo_->at(negTarget, ii)));
-    }
-    
-    // j=1
-    for (int64_t ii = 0; ii < grad_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      grad_.data_[ii] += -inv_sum_eminus*xi_minus.at(0).at(1)*(-invsumd*(hidden_.data_[ii] - wo2_->at(negTarget, ii)));
+    // --- Start of updates (re-organize to handle independent gradients) ---
+
+    // These values are needed regardless of whether margin_loss > 0 or diversity_penalty > 0
+    real sum_exp_eplus = std::exp(eplus_result.at(2));
+    real sum_exp_eminus = std::exp(eminus_result.at(2));
+
+    real inv_sum_eplus = effective_lr_margin * (1. / (1e-8 + sum_exp_eplus));
+    real inv_sum_eminus = effective_lr_margin * (1. / (1e-8 + sum_exp_eminus));
+
+    std::vector<std::vector<real>> xi_plus;
+    xi_plus.push_back({eplus_result.at(3), eplus_result.at(4)}); // {xi_plus_0_0, xi_plus_0_1}
+    xi_plus.push_back({eplus_result.at(5), eplus_result.at(6)}); // {xi_plus_1_0, xi_plus_1_1}
+
+    std::vector<std::vector<real>> xi_minus;
+    xi_minus.push_back({eminus_result.at(3), eminus_result.at(4)}); // {xi_minus_0_0, xi_minus_0_1}
+    xi_minus.push_back({eminus_result.at(5), eminus_result.at(6)}); // {xi_minus_1_0, xi_minus_1_1}
+
+    bool update_proto1_for_positive = false;
+    bool update_proto2_for_positive = false;
+
+    if (eplus_result.at(0) >= eplus_result.at(1)) {
+        update_proto1_for_positive = true;
+    } else {
+        update_proto2_for_positive = true;
     }
 
-    // (2) Update grad2_
-    for (int64_t ii = 0; ii < grad2_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      grad2_.data_[ii] += inv_sum_eplus*xi_plus.at(1).at(0)*(-invsumd*(hidden2_.data_[ii] - wo_->at(target, ii)));
-    }
-    // j=1
-    for (int64_t ii = 0; ii < grad2_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      grad2_.data_[ii] += inv_sum_eplus*xi_plus.at(1).at(1)*(-invsumd*(hidden2_.data_[ii] - wo2_->at(target, ii)));
+    // --- Variance Updates (if args_->var is true) ---
+    // These updates are solely based on the energy/margin loss components.
+    // They should only happen if margin_loss > 0.
+    if (args_->var && margin_loss > 0.0) { // Conditioned on margin_loss being positive
+        // Updating gradvar_ (for invar_)
+        temp_.zero();
+        if (update_proto1_for_positive) {
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
+                temp_.data_[ii] += 0.5 * inv_sum_eplus * xi_plus.at(0).at(0) * (-invsumd + pow(invsumd, 2.) * pow(hidden_.data_[ii] - wo_->at(target, ii), 2.));
+            }
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
+                temp_.data_[ii] += 0.5 * inv_sum_eplus * xi_plus.at(0).at(1) * (-invsumd + pow(invsumd, 2.) * pow(hidden_.data_[ii] - wo2_->at(target, ii), 2.));
+            }
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            temp_.data_[ii] += -0.5 * inv_sum_eminus * xi_minus.at(0).at(0) * (-invsumd + pow(invsumd, 2.) * pow(hidden_.data_[ii] - wo_->at(negTarget, ii), 2.));
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            temp_.data_[ii] += -0.5 * inv_sum_eminus * xi_minus.at(0).at(1) * (-invsumd + pow(invsumd, 2.) * pow(hidden_.data_[ii] - wo2_->at(negTarget, ii), 2.));
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            gradvar_.data_[ii] = exp(invar_->at(wordidx, ii)) * temp_.data_[ii];
+        }
+
+        // Updating gradvar2_ (for invar2_)
+        temp_.zero();
+        if (update_proto2_for_positive) {
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
+                temp_.data_[ii] += 0.5 * inv_sum_eplus * xi_plus.at(1).at(0) * (-invsumd + pow(invsumd, 2.) * pow(hidden2_.data_[ii] - wo_->at(target, ii), 2.));
+            }
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
+                temp_.data_[ii] += 0.5 * inv_sum_eplus * xi_plus.at(1).at(1) * (-invsumd + pow(invsumd, 2.) * pow(hidden2_.data_[ii] - wo2_->at(target, ii), 2.));
+            }
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            temp_.data_[ii] += -0.5 * inv_sum_eminus * xi_minus.at(1).at(0) * (-invsumd + pow(invsumd, 2.) * pow(hidden2_.data_[ii] - wo_->at(negTarget, ii), 2.));
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            temp_.data_[ii] += -0.5 * inv_sum_eminus * xi_minus.at(1).at(1) * (-invsumd + pow(invsumd, 2.) * pow(hidden2_.data_[ii] - wo2_->at(negTarget, ii), 2.));
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            gradvar2_.data_[ii] = exp(invar2_->at(wordidx, ii)) * temp_.data_[ii];
+        }
+
+        // Update outvar_[target]
+        temp_.zero();
+        if (update_proto1_for_positive) {
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
+                temp_.data_[ii] += -0.5 * inv_sum_eplus * xi_plus.at(0).at(0) * (-invsumd + pow(invsumd, 2.) * pow(hidden_.data_[ii] - wo_->at(target, ii), 2.));
+            }
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd1 = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            real invsumd2 = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            temp_.data_[ii] += 0.5 * inv_sum_eminus * xi_minus.at(0).at(0) * (-invsumd1 + pow(invsumd1, 2.) * pow(hidden_.data_[ii] - wo_->at(negTarget, ii), 2.));
+            temp_.data_[ii] += 0.5 * inv_sum_eminus * xi_minus.at(1).at(0) * (-invsumd2 + pow(invsumd2, 2.) * pow(hidden2_.data_[ii] - wo_->at(negTarget, ii), 2.));
+        }
+        temp_.mulExpRow(*outvar_, target);
+        outvar_->addRow(temp_, target, 1.);
+
+        // Update outvar2_[target]
+        temp_.zero();
+        if (update_proto2_for_positive) {
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
+                temp_.data_[ii] += -0.5 * inv_sum_eplus * xi_plus.at(1).at(1) * (-invsumd + pow(invsumd, 2.) * pow(hidden2_.data_[ii] - wo2_->at(target, ii), 2.));
+            }
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd1 = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            real invsumd2 = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            temp_.data_[ii] += 0.5 * inv_sum_eminus * xi_minus.at(0).at(1) * (-invsumd1 + pow(invsumd1, 2.) * pow(hidden_.data_[ii] - wo2_->at(negTarget, ii), 2.));
+            temp_.data_[ii] += 0.5 * inv_sum_eminus * xi_minus.at(1).at(1) * (-invsumd2 + pow(invsumd2, 2.) * pow(hidden2_.data_[ii] - wo2_->at(negTarget, ii), 2.));
+        }
+        temp_.mulExpRow(*outvar2_, target);
+        outvar2_->addRow(temp_, target, 1.);
+    } // End if (args_->var && margin_loss > 0.0)
+
+    // --- Gradient Updates for Embeddings (grad_ and grad2_) ---
+    // Apply margin-based gradients if margin_loss > 0
+    if (margin_loss > 0.0) {
+        // (1) Update grad_ (for prototype 1, hidden_)
+        if (update_proto1_for_positive) {
+            for (int64_t ii = 0; ii < grad_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
+                grad_.data_[ii] += inv_sum_eplus * xi_plus.at(0).at(0) * (-invsumd * (hidden_.data_[ii] - wo_->at(target, ii)));
+            }
+            for (int64_t ii = 0; ii < grad_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
+                grad_.data_[ii] += inv_sum_eplus * xi_plus.at(0).at(1) * (-invsumd * (hidden_.data_[ii] - wo2_->at(target, ii)));
+            }
+        }
+        for (int64_t ii = 0; ii < grad_.m_; ii++) {
+            real invsumd_wo = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            real invsumd_wo2 = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            grad_.data_[ii] += -inv_sum_eminus * xi_minus.at(0).at(0) * (-invsumd_wo * (hidden_.data_[ii] - wo_->at(negTarget, ii)));
+            grad_.data_[ii] += -inv_sum_eminus * xi_minus.at(0).at(1) * (-invsumd_wo2 * (hidden_.data_[ii] - wo2_->at(negTarget, ii)));
+        }
+
+        // (2) Update grad2_ (for prototype 2, hidden2_)
+        if (update_proto2_for_positive) {
+            for (int64_t ii = 0; ii < grad2_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
+                grad2_.data_[ii] += inv_sum_eplus * xi_plus.at(1).at(0) * (-invsumd * (hidden2_.data_[ii] - wo_->at(target, ii)));
+            }
+            for (int64_t ii = 0; ii < grad2_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
+                grad2_.data_[ii] += inv_sum_eplus * xi_plus.at(1).at(1) * (-invsumd * (hidden2_.data_[ii] - wo2_->at(target, ii)));
+            }
+        }
+        for (int64_t ii = 0; ii < grad2_.m_; ii++) {
+            real invsumd_wo = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            real invsumd_wo2 = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            grad2_.data_[ii] += -inv_sum_eminus * xi_minus.at(1).at(0) * (-invsumd_wo * (hidden2_.data_[ii] - wo_->at(negTarget, ii)));
+            grad2_.data_[ii] += -inv_sum_eminus * xi_minus.at(1).at(1) * (-invsumd_wo2 * (hidden2_.data_[ii] - wo2_->at(negTarget, ii)));
+        }
+
+        ///////////////////////////////////
+        // (3) Update wo_[target]
+        temp_.zero();
+        if (update_proto1_for_positive) {
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
+                temp_[ii] += xi_plus.at(0).at(0) * invsumd * (hidden_.data_[ii] - wo_->at(target, ii));
+            }
+        }
+        wo_->addRow(temp_, target, inv_sum_eplus);
+
+        // (4) Update wo2[target]
+        temp_.zero();
+        if (update_proto2_for_positive) {
+            for (int64_t ii = 0; ii < temp_.m_; ii++) {
+                real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
+                temp_[ii] += xi_plus.at(1).at(1) * invsumd * (hidden2_.data_[ii] - wo2_->at(target, ii));
+            }
+        }
+        wo2_->addRow(temp_, target, inv_sum_eplus);
+
+        // (5) Update wo_[negTarget]
+        temp_.zero();
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            temp_[ii] += xi_minus.at(0).at(0) * invsumd * (hidden_.data_[ii] - wo_->at(negTarget, ii));
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
+            temp_[ii] += xi_minus.at(1).at(0) * invsumd * (hidden2_.data_[ii] - wo_->at(negTarget, ii));
+        }
+        wo_->addRow(temp_, negTarget, -inv_sum_eminus);
+
+        // (6) Update wo2_[negTarget]
+        temp_.zero();
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            temp_[ii] += xi_minus.at(0).at(1) * invsumd * (hidden_.data_[ii] - wo2_->at(negTarget, ii));
+        }
+        for (int64_t ii = 0; ii < temp_.m_; ii++) {
+            real invsumd = 1. / (1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
+            temp_[ii] += xi_minus.at(1).at(1) * invsumd * (hidden2_.data_[ii] - wo2_->at(negTarget, ii));
+        }
+        wo2_->addRow(temp_, negTarget, -inv_sum_eminus);
+    } // End if (margin_loss > 0.0)
+
+    // Apply diversity gradients if diversity_penalty > 0
+    if (args_->multi && diversity_penalty > 0.0) {
+        // Gradient for hidden_ from diversity penalty
+        for (int64_t ii = 0; ii < grad_.m_; ii++) {
+            real term1 = hidden2_.data_[ii] / (std::sqrt(norm_hidden + 1e-8) * std::sqrt(norm_hidden2 + 1e-8));
+            real term2 = hidden_.data_[ii] * current_cosine_sim / (norm_hidden + 1e-8);
+            // Multiply by 2 * current_cosine_sim because of the square in the loss term
+            grad_.data_[ii] -= effective_lr_diversity * args_->diversity_weight * 2 * current_cosine_sim * (term1 - term2);
+        }
+
+        // Gradient for hidden2_ from diversity penalty
+        for (int64_t ii = 0; ii < grad2_.m_; ii++) {
+            real term1 = hidden_.data_[ii] / (std::sqrt(norm_hidden + 1e-8) * std::sqrt(norm_hidden2 + 1e-8));
+            real term2 = hidden2_.data_[ii] * current_cosine_sim / (norm_hidden2 + 1e-8);
+            // Multiply by 2 * current_cosine_sim because of the square in the loss term
+            grad2_.data_[ii] -= effective_lr_diversity * args_->diversity_weight * 2 * current_cosine_sim * (term1 - term2);
+        }
     }
 
-    // Do it for context j-   
-    for (int64_t ii = 0; ii < grad2_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      grad2_.data_[ii] += -inv_sum_eminus*xi_minus.at(1).at(0)*(-invsumd*(hidden2_.data_[ii] - wo_->at(negTarget, ii)));
-    }
-
-    // j=1
-    for (int64_t ii = 0; ii < grad2_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      grad2_.data_[ii] += -inv_sum_eminus*xi_minus.at(1).at(1)*(-invsumd*(hidden2_.data_[ii] - wo2_->at(negTarget, ii)));
-    }
-
-    ///////////////////////////////
-    // (3) Update wo_[target]     --- this involves eplus
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      temp_[ii] += xi_plus.at(0).at(0)*invsumd*(hidden_.data_[ii] - wo_->at(target, ii));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(target, ii)));
-      temp_[ii] += xi_plus.at(1).at(0)*invsumd*(hidden2_.data_[ii] - wo_->at(target, ii));
-    }
-    wo_->addRow(temp_, target, inv_sum_eplus);
-    
-    // (4) Update wo2[target]     --- this involves eplus
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      temp_[ii] += xi_plus.at(0).at(1)*invsumd*(hidden_.data_[ii] - wo2_->at(target, ii));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(target, ii)));
-      temp_[ii] += xi_plus.at(1).at(1)*invsumd*(hidden2_.data_[ii] - wo2_->at(target, ii));
-    }
-    wo2_->addRow(temp_, target, inv_sum_eplus);
-
-    // (5) Update wo_[negTarget]  --- this involves eminus
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      temp_[ii] += xi_minus.at(0).at(0)*invsumd*(hidden_.data_[ii] - wo_->at(negTarget, ii));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar_->at(negTarget, ii)));
-      temp_[ii] += xi_minus.at(1).at(0)*invsumd*(hidden2_.data_[ii] - wo_->at(negTarget, ii));
-    }
-    wo_->addRow(temp_, negTarget, -inv_sum_eminus);
-    
-    // (6) Update wo2_[negTarget] --- this involves eminus
-    temp_.zero();
-    // from i=0
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      temp_[ii] += xi_minus.at(0).at(1)*invsumd*(hidden_.data_[ii] - wo2_->at(negTarget, ii));
-    }
-    // from i=1
-    for (int64_t ii = 0; ii < temp_.m_; ii++) {
-      real invsumd = 1./(1e-8 + exp(invar2_->at(wordidx, ii)) + exp(outvar2_->at(negTarget, ii)));
-      temp_[ii] += xi_minus.at(1).at(1)*invsumd*(hidden2_.data_[ii] - wo2_->at(negTarget, ii));
-    }
-    wo2_->addRow(temp_, negTarget, -inv_sum_eminus);
-  }
-  return std::max((real) 0.0, loss);
+    return total_loss; // Return the total loss
 }
 
 real Model::hierarchicalSoftmax(int32_t target, real lr) {
@@ -1004,17 +1018,35 @@ void Model::computeHidden2(const std::vector<int32_t>& input, Vector& hidden, bo
   }
 }
 
+// void Model::computeHidden2_mv(const std::vector<int32_t>& input, Vector& hidden) const {
+//   // Just using the vector for component 2
+//   assert(hidden.size() == hsz_);
+//   hidden.zero();
+//   int jjj = 0;
+//   for (auto it = input.cbegin(); it != input.cend(); ++it) {
+//     hidden.addRow(*wi2_, *it);
+//     break;
+//   }
+// }
+
+// In model.cc
+
 void Model::computeHidden2_mv(const std::vector<int32_t>& input, Vector& hidden) const {
-  // Just using the vector for component 2
   assert(hidden.size() == hsz_);
   hidden.zero();
-  int jjj = 0;
+  int32_t count = 0; 
+
   for (auto it = input.cbegin(); it != input.cend(); ++it) {
-    hidden.addRow(*wi2_, *it);
-    break;
+    if (*it < num_words) { 
+      hidden.addRow(*wi2_, *it);
+      count++; 
+    }
+  }
+
+  if (count > 0) { 
+      hidden.mul(1.0 / count);
   }
 }
-
 bool Model::comparePairs(const std::pair<real, int32_t> &l,
                          const std::pair<real, int32_t> &r) {
   return l.first > r.first;
@@ -1145,8 +1177,10 @@ void Model::update(const std::vector<int32_t>& input, int32_t target, real lr) {
 
   // MV mode - use only vector representation for cluster 2
   for (auto it = input.cbegin(); it != input.cend(); ++it) {
-    wi2_->addRow(grad2_, *it, 1.0);
-    break;
+    if (*it < num_words) { 
+      wi2_->addRow(grad2_, *it, 1.0);
+    }
+    // break;
   }
   // update var
   if (args_->var){

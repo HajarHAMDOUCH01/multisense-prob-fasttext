@@ -52,17 +52,17 @@ class MultiFastText:
     self.dein = True   # original ft
     self.deout = False # original ft
     if "no-dein" in basename:
-      print "Setting dein = False based on the basename"
+      print("Setting dein = False based on the basename")
       self.dein = False
 
     dict_fname = basename + ".words"
     in_fname = basename + ".in"
     out_fname = basename + ".out"
-    if verbose: print "Loading Words from Dictionary"
+    if verbose: print("Loading Words from Dictionary")
     self.load_dict(dict_fname)
-    if verbose: print "Loading Emb Out"
+    if verbose: print("Loading Emb Out")
     self.emb_out = self.load_emb_out(out_fname)
-    if verbose: print "Loading Emb In"
+    if verbose: print("Loading Emb In")
     self.emb = self.load_emb_in(in_fname)
 
     # meaning that for multi-prototype, the second cluster uses vector representation
@@ -77,9 +77,9 @@ class MultiFastText:
       self.emb_multi[:,0] = self.emb
       self.emb_multi_out[:,0] = self.emb_out
 
-      if verbose: print "Loading emb2_out"
+      if verbose: print("Loading emb2_out")
       self.emb_multi_out[:,1] = self.load_emb_out(out_fname + "2")
-      if verbose: print "Loading emb2"
+      if verbose: print("Loading emb2")
       emb_in2 = self.load_emb_in(in_fname + "2") # this will set mv to true or false, based on the .in2 file
       if self.mv:
         self.emb_multi[:self.nwords, 1] = emb_in2 # the rest of the indices are zero
@@ -96,12 +96,12 @@ class MultiFastText:
 
     # caching
     if self.cache and self.bucket != 0:
-      print "Cache subword"
+      print("Cache subword")
       self.subword_emb = self.cache_subword_rep(basename=basename)
       if multi:
         self.subword_emb_multi = np.zeros((self.subword_emb.shape[0], 2, self.subword_emb.shape[1]))
         self.subword_emb_multi[:, 0] = self.subword_emb
-        print "Cache subword2"
+        print("Cache subword2")
         if self.mv:
           # copy from emb_multi directly to subword_emb
           print("No Caching of Multi Rep - subword_emb_multi[:,1] uses dictionary level directly")
@@ -117,10 +117,10 @@ class MultiFastText:
     if savevec:
       fout_vec_name = basename + ".pyvec"
       if False and os.path.isfile(fout_vec_name):
-        print "File {} already exists. Not saving".format(fout_vec_name)
+        print("File {} already exists. Not saving".format(fout_vec_name))
         return
       else:
-        print "Saving vector file ", fout_vec_name
+        print("Saving vector file ", fout_vec_name)
       fout_vec = open(fout_vec_name, 'w')
       if multi:
         fout_vec1 = open(fout_vec_name + "1", 'w')
@@ -148,93 +148,99 @@ class MultiFastText:
           fout_vec.write(line)
 
   def load_dict(self, fname):
-    self.id2word = []
-    with open(fname, 'r') as f:
-      for line in f:
-        self.id2word.append(line.strip())
-    self.word2id = {}
-    for i, word in enumerate(self.id2word):
-      self.word2id[word] = i
-    self.nwords = len(self.id2word)
+      self.id2word = []
+      # Make sure this line has encoding='utf-8'
+      with open(fname, 'r', encoding='utf-8') as f:
+          for line in f:
+              self.id2word.append(line.strip())
+      self.word2id = {}
+      for i, word in enumerate(self.id2word):
+          self.word2id[word] = i
+      self.nwords = len(self.id2word)
 
   def cache_subword_rep(self, basename=None, emb=None, verbose=False, suffix=".subword.npy"):
     if emb is None:
       emb = self.emb
     if basename is not None and os.path.isfile(basename + suffix):
-      if verbose: print 'Loading Cached Subword Embeddings'
+      if verbose: print('Loading Cached Subword Embeddings')
       subword_emb = np.load(basename + suffix)
       return subword_emb
-    if verbose: print 'Caching Subword Embeddings'
+    if verbose: print('Caching Subword Embeddings')
     subword_emb = np.zeros((self.nwords, self.D))
     for i, word in enumerate(self.id2word):
       ngram_idxs, _ = self.getNgrams(word)
       if not self.dein:
           ngram_idxs = ngram_idxs[1:]
-      if verbose: print ngram_idxs
+      if verbose: print(ngram_idxs)
       for idx in ngram_idxs:
-        if verbose >=1: print 'idxs =', idx
-        if verbose >=2: print emb[idx]
+        if verbose >=1: print('idxs =', idx)
+        if verbose >=2: print(emb[idx])
         subword_emb[i] += emb[idx]
       subword_emb[i] /= len(ngram_idxs)*1.0
     self.cache=True
-    if verbose: print 'Saving {} for future read'.format(suffix)
+    if verbose: print('Saving {} for future read'.format(suffix))
     np.save(basename + suffix, subword_emb)
     return subword_emb
 
   ############################################################
   def load_emb_out(self, fname, verbose=False):
-    if os.path.isfile(fname + '.npy'):
-      emb_out = np.load(fname + '.npy')
-    else:
-      df = pd.read_csv(fname, header=None, delim_whitespace=True,)
-      emb_out = df.values
-      if verbose: print 'Saving emb_out in .npy for future read'
-      np.save(fname + '.npy', emb_out)
-    assert emb_out.shape[0] == self.nwords, "emb_out shape = {} and nwords = {}".format(
-      emb_out.shape[0], self.nwords)
-    self.D = emb_out.shape[1]
-    return emb_out
+      if os.path.isfile(fname + '.npy'):
+          emb_out = np.load(fname + '.npy')
+      else:
+          # Make sure this line has encoding='utf-8'
+          df = pd.read_csv(fname, header=None, sep='\s+', encoding='utf-8')
+          emb_out = df.values
+          if verbose: print('Saving emb_out in .npy for future read')
+          np.save(fname + '.npy', emb_out)
+      assert emb_out.shape[0] == self.nwords, "emb_out shape = {} and nwords = {}".format(
+          emb_out.shape[0], self.nwords)
+      self.D = emb_out.shape[1]
+      return emb_out
 
   def load_emb_in(self, fname, verbose=False):
-    if os.path.isfile(fname + '.npy'):
-      emb = np.load(fname + '.npy')
-      if emb.shape[0] == self.nwords:
-        self.mv = True
+      if os.path.isfile(fname + '.npy'):
+        emb = np.load(fname + '.npy')
+        if emb.shape[0] == self.nwords:
+          self.mv = True
+        else:
+          self.mv = False
       else:
-        self.mv = False
-    else:
-      df = pd.read_csv(fname, header=None, delim_whitespace=True,)
-      emb = df.values
-      # checking if this case is mv or not
-      if emb.shape[0] == self.nwords:
-        print("Setting MV mode = True")
-        self.mv = True
-      elif emb.shape[0] == self.nwords + self.bucket:
-        self.mv = False
-      else:
-        assert False, "Unexpected error"
+        # For pandas, specify encoding in read_csv
+        df = pd.read_csv(fname, header=None, sep='\s+', encoding='utf-8')
+        emb = df.values
+        # checking if this case is mv or not
+        if emb.shape[0] == self.nwords:
+          print("Setting MV mode = True")
+          self.mv = True
+        elif emb.shape[0] == self.nwords + self.bucket:
+          self.mv = False
+        else:
+          assert False, "Unexpected error"
 
-      if verbose: print 'Saving emb_in in .npy for future read'
-      np.save(fname + '.npy', emb)
-    if self.maxn != 0:
-      if self.mv:
-        assert emb.shape[0] == self.nwords, \
-          "[MV mode] shape of loaded emb_in {}/ nwords {} / bucket {} / expected nrows {}".format(emb.shape, 
+        if verbose: print('Saving emb_in in .npy for future read')
+        np.save(fname + '.npy', emb)
+      
+      # --- FIX STARTS HERE ---
+      # This entire block needs to be dedented by one level
+      if self.maxn != 0: # This is line 223 in your traceback
+        if self.mv:
+          assert emb.shape[0] == self.nwords, \
+            "[MV mode] shape of loaded emb_in {}/ nwords {} / bucket {} / expected nrows {}".format(emb.shape, 
+              self.nwords, 
+              self.bucket, 
+              self.nwords)
+        else:
+          assert emb.shape[0] == self.nwords + self.bucket, \
+          "shape of loaded emb_in {}/ nwords {} / bucket {} / expected nrows {}".format(emb.shape, 
             self.nwords, 
             self.bucket, 
-            self.nwords)
-      else:
-        assert emb.shape[0] == self.nwords + self.bucket, \
-        "shape of loaded emb_in {}/ nwords {} / bucket {} / expected nrows {}".format(emb.shape, 
-          self.nwords, 
-          self.bucket, 
-          self.nwords + self.bucket)
+            self.nwords + self.bucket)
 
-    else:
-      assert emb.shape[0] == self.nwords, "For model with maxn=0, we expect the number of rows {} to be the number of words {}".format(
-        emb.shape[0], self.nwords)
-    assert emb.shape[1] == self.D
-    return emb
+      else:
+        assert emb.shape[0] == self.nwords, "For model with maxn=0, we expect the number of rows {} to be the number of words {}".format(
+          emb.shape[0], self.nwords)
+      assert emb.shape[1] == self.D
+      return emb
 
   ############################################################
 
@@ -258,23 +264,23 @@ class MultiFastText:
     """
     Given a string, obtain the subword representation
     """
-    if type(words) is str:
+    if isinstance(words, str):
       assert len(words) >= 1
       if words not in self.word2id or not self.cache:
         ngram_idxs, _ = self.getNgrams(words)
         if not self.dein:
           ngram_idxs = ngram_idxs[1:]
-        if verbose: print ngram_idxs
+        if verbose: print(ngram_idxs)
         vec = np.zeros((self.D))
         for idx in ngram_idxs:
-          if verbose >=1: print 'idxs =', idx
-          if verbose >=2: print emb[idx]
+          if verbose >=1: print('idxs =', idx)
+          if verbose >=2: print(emb[idx])
           vec += emb[idx]
         vec /= len(ngram_idxs)*1.0
         return vec, 1
       else:
         return subword_emb[self.word2id[words]], 1
-    elif type(words) is list:
+    elif isinstance(words, list):
       vecs = np.zeros((len(words), self.D))
       for i, word in enumerate(words):
         if word not in self.word2id or not self.cache:
@@ -297,7 +303,7 @@ class MultiFastText:
   # only supporting one word lookup
   # If the ngram norm is less than thres, do not add it
   def subword_rep_thres(self, word, verbose=0, thres=0.05):
-    if type(word) is str:
+    if isinstance(word, str):
       assert len(word) >= 1
       ngram_idxs, _ = self.getNgrams(word)
       # Do not include the word itself (first index) in the average
@@ -306,21 +312,21 @@ class MultiFastText:
       vec = np.zeros((self.D))
       counter = 0
       if verbose:
-        print "Treshold = ", thres
+        print("Treshold = ", thres)
       for idx in ngram_idxs:
         if np.linalg.norm(self.emb[idx]) > thres:
           vec += self.emb[idx]
           counter += 1
       vec /= (0.000001 + counter*1.0)
       return vec, 1
-    elif type(word) is list:
+    elif isinstance(word, list):
       vecs = np.zeros((len(word), self.D))
-      for i in xrange(len(word)):
+      for i in range(len(word)):
         vecs[i], _ = self.subword_rep_thres(word[i], thres=thres, verbose=verbose)
       return vecs, np.array([True]*len(word))
 
   def subword_rep_cos_thres(self, word, verbose=0, thres=0.0):
-    if type(word) is str:
+    if isinstance(word, str):
       assert len(word) >= 1
       ngram_idxs, _ = self.getNgrams(word)
       # Do not include the word itself (first index) in the average
@@ -338,11 +344,11 @@ class MultiFastText:
           counter += 1
       vec /= (0.000001 + counter*1.0)
       if verbose:
-        print "Total size {} Num included {}".format(len(ngram_idxs), counter)
+        print("Total size {} Num included {}".format(len(ngram_idxs), counter))
       return vec, 1
-    elif type(word) is list:
+    elif isinstance(word, list):
       vecs = np.zeros((len(word), self.D))
-      for i in xrange(len(word)):
+      for i in range(len(word)):
         vecs[i], _ = self.subword_rep_cos_thres(word[i], thres=thres, verbose=verbose)
       return vecs, np.array([True]*len(word))
 
@@ -359,7 +365,7 @@ class MultiFastText:
     return vec, indic
 
   def dict_rep(self, words):
-    if type(words) is str:
+    if isinstance(words, str):
       # if not in the dict, return zero vectors
       vec = np.zeros((self.D))
       if words in self.word2id:
@@ -368,7 +374,7 @@ class MultiFastText:
         return vec, 1
       else:
         return vec, 0
-    elif type(words) is list:
+    elif isinstance(words, list):
       # return a list of boolean for which vectors are in the dict
       nn = len(words)
       vecs = np.zeros((nn, self.D))
@@ -381,7 +387,7 @@ class MultiFastText:
       return vecs, inds
 
   def dict_rep2(self, words):
-    if type(words) is str:
+    if isinstance(words, str):
       # if not in the dict, return zero vectors
       vec = np.zeros((self.D))
       if words in self.word2id:
@@ -390,7 +396,7 @@ class MultiFastText:
         return vec, 1
       else:
         return vec, 0
-    elif type(words) is list:
+    elif isinstance(words, list):
       # return a list of boolean for which vectors are in the dict
       nn = len(words)
       vecs = np.zeros((nn, self.D))
@@ -405,12 +411,12 @@ class MultiFastText:
   def dict_rep_multi(self, words):
     vecs, _ = self.dict_rep(words)
     vecs2, _ = self.dict_rep2(words)
-    return np.stack([vecs, vecs2], axis=1), np.array([1]*vecs.shape[0], dtype=bool)  
+    return np.stack([vecs, vecs2], axis=1), np.array([1]*vecs.shape[0], dtype=bool)   
 
   def dict_rep_out(self, words, emb_out=None):
     if emb_out is None:
       emb_out = self.emb_out
-    if type(words) is str:
+    if isinstance(words, str):
       # if not in the dict, return zero vectors
       vec = np.zeros((self.D))
       if words in self.word2id:
@@ -419,7 +425,7 @@ class MultiFastText:
         return vec, 1
       else:
         return vec, 0
-    elif type(words) is list:
+    elif isinstance(words, list):
       # return a list of boolean for which vectors are in the dict
       nn = len(words)
       vecs = np.zeros((nn, self.D))
@@ -444,49 +450,49 @@ class MultiFastText:
     # emb_func is a function that calculates the embedding
     # code you want to evaluate
     start_time = timeit.default_timer()
-    if verbose: "word = ", word
-    if type(word) is str:
+    if verbose: print("word = ", word)
+    if isinstance(word, str):
       vec, _ = emb_func(word)
-    elif type(word) is np.ndarray:
+    elif isinstance(word, np.ndarray):
       assert len(word.shape) == 1
       vec = word
     vec /= (0.000001 + np.linalg.norm(vec))
     search_dict_size = min(len(self.word2id), limit_vocab_size)
     # code you want to evaluate
     elapsed = timeit.default_timer() - start_time
-    if verbose: print 'Time before allocation', elapsed
+    if verbose: print('Time before allocation', elapsed)
     start_time = timeit.default_timer()
     emb = np.zeros((search_dict_size, self.D))
     elapsed = timeit.default_timer() - start_time
-    if verbose: print 'Time for allocation', elapsed
+    if verbose: print('Time for allocation', elapsed)
     start_time = timeit.default_timer()
-    for i in range(search_dict_size):  
+    for i in range(search_dict_size):   
       ww = self.id2word[i]
       emb[i], _ = emb_func(ww)
     elapsed = timeit.default_timer() - start_time
-    if verbose: print 'Time for emb calculation', elapsed
+    if verbose: print('Time for emb calculation', elapsed)
     start_time = timeit.default_timer()
-    if verbose: print 'Done calculating emb'
+    if verbose: print('Done calculating emb')
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
     elapsed = timeit.default_timer() - start_time
-    if verbose: print 'Time for normalization', elapsed
+    if verbose: print('Time for normalization', elapsed)
     start_time = timeit.default_timer()
-    if verbose: print 'Done normalizing'
+    if verbose: print('Done normalizing')
     cosine_sims = np.dot(emb, vec)
     elapsed = timeit.default_timer() - start_time
-    if verbose: print 'Time for dot', elapsed
+    if verbose: print('Time for dot', elapsed)
     start_time = timeit.default_timer()
     if num_neighbors == 1:
       argmax = np.argmax(cosine_sims)
       nn_word = self.id2word[argmax]
       elapsed = timeit.default_timer() - start_time
-      if verbose: print 'Time for find max', elapsed
+      if verbose: print('Time for find max', elapsed)
       return nn_word
     else:
       argmin = np.argsort(cosine_sims)
       argmax = argmin[::-1]
       nn_words = np.array(self.id2word)[(argmax[:num_neighbors])]
-      if verbose: print 'Done sorting'
+      if verbose: print('Done sorting')
       if not show_scores:
         return nn_words
       else:
@@ -495,7 +501,7 @@ class MultiFastText:
 
   def idxs2words(self, idxs):
     # convert a list of strings to a list of words
-    words = ["{}:{}".format(self.id2word[idx/self.num_mixtures], idx%self.num_mixtures) for idx in idxs]
+    words = ["{}:{}".format(self.id2word[idx//self.num_mixtures], idx%self.num_mixtures) for idx in idxs]
     return words
 
   def show_nearest_neighbors(self, idx_or_word, emb_multi=None, cl=0, num_nns=100, plot=False, verbose=False):
@@ -515,9 +521,9 @@ class MultiFastText:
     dist_val = dist[highsim_idxs]
     words = self.idxs2words(highsim_idxs)
     
-    print 'Top highest similarity of {} cl {}'.format(self.id2word[idx], cl)
-    print words[:num_nns]
-    if verbose: print dist_val[:num_nns]
+    print('Top highest similarity of {} cl {}'.format(self.id2word[idx], cl))
+    print(words[:num_nns])
+    if verbose: print(dist_val[:num_nns])
 
   def show_nearest_neighbors_single(self, idx_or_word, cl=0, num_nns=100, plot=False, verbose=False):
     # Note: emb_multi is a flatten matrix for multi-prototype
@@ -531,12 +537,12 @@ class MultiFastText:
     # select top num_nns (linear) indices with the highest cosine similarity
     highsim_idxs = highsim_idxs[:num_nns]
     dist_val = dist[highsim_idxs]
-    print highsim_idxs
+    print(highsim_idxs)
     words = ["{}".format(self.id2word[idx]) for idx in highsim_idxs]
     
-    print 'Top highest similarity of {} cl {}'.format(self.id2word[idx], cl)
-    print words[:num_nns]
-    if verbose: print dist_val[:num_nns]
+    print('Top highest similarity of {} cl {}'.format(self.id2word[idx], cl))
+    print(words[:num_nns])
+    if verbose: print(dist_val[:num_nns])
 ###################################################################
 
 # read a file and put all the words in a list
@@ -552,7 +558,7 @@ def file_to_list(fname):
 def output_embs(words, embs):
   assert len(words) == embs.shape[0]
   for word, emb in zip(words, embs):
-    print word + " " + " ".join([str(item) for item in emb])
+    print(word + " " + " ".join([str(item) for item in emb]))
 
 def main():
   parser = argparse.ArgumentParser(description='')

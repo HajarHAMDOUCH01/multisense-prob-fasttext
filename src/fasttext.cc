@@ -299,7 +299,8 @@ void FastText::loadModel(std::istream& in) {
     output_->load(in);
   }
 
-  model_ = std::make_shared<Model>(input_, output_, input2_, output2_, inputvar_, input2var_, outputvar_, output2var_, args_, 0);
+  model_ = std::make_shared<Model>(input_, output_, input2_, output2_, inputvar_, input2var_, outputvar_, output2var_, args_, 0, dict_->nwords());
+
   model_->quant_ = quant_;
   model_->setQuantizePointer(qinput_, qoutput_, args_->qout);
 
@@ -659,7 +660,9 @@ void FastText::trainThread(int32_t threadId) {
   std::ifstream ifs(args_->input);
   utils::seek(ifs, threadId * utils::size(ifs) / args_->thread);
 
-  Model model(input_, output_, input2_, output2_, inputvar_, input2var_, outputvar_, output2var_, args_, threadId);
+    Model model(input_, output_, input2_, output2_,
+              inputvar_, input2var_, outputvar_, output2var_, 
+              args_, threadId, dict_->nwords());
   
   if (args_->model == model_name::sup) {
     model.setTargetCounts(dict_->getCounts(entry_type::label));
@@ -808,7 +811,8 @@ void FastText::train(std::shared_ptr<Args> args) {
   } else {
     trainThread(0);
   }
-  model_ = std::make_shared<Model>(input_, output_, input2_, output2_, inputvar_, input2var_, outputvar_, output2var_, args_, 0);
+  model_ = std::make_shared<Model>(input_, output_, input2_, output2_, inputvar_, input2var_, outputvar_, output2var_, args_, 0, dict_->nwords());
+
   saveModel();
   if (args_->model != model_name::sup) {
     saveVectors();

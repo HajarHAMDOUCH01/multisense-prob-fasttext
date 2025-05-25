@@ -14,18 +14,22 @@ import numpy as np
 BOW = "<"
 EOW = ">"
 
-M32 = 0xffffffffL
+# In Python 3, integers automatically handle arbitrary size, so we don't need 'L' or long()
+# M32 is still used for bitwise operations to simulate 32-bit unsigned integers.
+M32 = 0xFFFFFFFF 
 
 def m32(n):
-  return n & M32
+    return n & M32
 
 def mmul(a, b):
-  return m32(a*b)
+    # In Python 3, integer multiplication handles large numbers automatically.
+    # We apply m32 to keep it within the 32-bit unsigned range as per the original logic.
+    return m32(a * b)
 
-def hash(str):
-  h = m32(2166136261L)
-  for c in str:
-    cc = m32(long(ord(c)))
-    h = m32(h ^ cc)
-    h = mmul(h, 16777619L)
-  return h
+def hash(s): # Renamed 'str' to 's' to avoid conflict with built-in str()
+    h = m32(2166136261) # Removed 'L'
+    for c in s:
+        cc = m32(ord(c)) # Removed 'long()'
+        h = m32(h ^ cc)
+        h = mmul(h, 16777619) # Removed 'L'
+    return h
