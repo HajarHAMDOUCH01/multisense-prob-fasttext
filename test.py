@@ -4,7 +4,6 @@ import scipy.spatial.distance # Needed for cosine_similarity if not already impo
 import argparse # Import argparse to handle command-line arguments
 from multift import MultiFastText # Import your MultiFastText class
 
-# Your existing cosine_similarity function (keep this)
 def cosine_similarity(vec1, vec2):
     dot_product = np.dot(vec1, vec2)
     norm_a = np.linalg.norm(vec1)
@@ -13,7 +12,6 @@ def cosine_similarity(vec1, vec2):
         return 0.0
     return dot_product / (norm_a * norm_b)
 
-# Your existing find_most_similar function (keep this)
 def find_most_similar(query_vec, all_vectors_dict, top_n=10, exclude_word=None):
     similarities = []
     for word, vec in all_vectors_dict.items():

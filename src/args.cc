@@ -59,7 +59,7 @@ Args::Args() {
   // BenA: for max margin loss
   margin = 1.0;
   var_scale = 0.05; // This is the default for 50 dim - find a good value for 300 dim
-  multi = false;
+  multi = true;
   expdot = false;
   var = false;
 }
