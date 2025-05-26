@@ -19,7 +19,7 @@ namespace fasttext {
 
 Args::Args() {
   diversity_weight = 0.0;
-  lr = 0.05;
+  lr = 0.001;
   dim = 100;
   ws = 100;
   epoch = 5;
